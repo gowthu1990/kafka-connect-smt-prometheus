@@ -1,4 +1,4 @@
-package com.yuktitechnologies;
+package com.yuktitechnologies.exception;
 
 import org.apache.kafka.connect.errors.DataException;
 

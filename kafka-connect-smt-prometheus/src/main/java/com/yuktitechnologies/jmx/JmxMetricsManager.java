@@ -1,4 +1,4 @@
-package com.yuktitechnologies;
+package com.yuktitechnologies.jmx;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -18,7 +18,9 @@ public class JmxMetricsManager {
     }
 
     public void registerMetrics(PiiMetrics metrics, String instanceId) {
-        String mbeanName = String.format("com.yuktitechnologies:type=PiiMaskingMetrics,name=SmtLatencyTracker,id=%s", instanceId);
+        String typeName = instanceId.contains("PROTOBUF") ? "ProtobufMetrics" : "JsonMetrics";
+        String mbeanName = String.format("com.yuktitechnologies:type=%s,name=SmtLatencyTracker,id=%s",
+                typeName, instanceId);
 
         try {
             this.jmxObjectName = new ObjectName(mbeanName);
@@ -27,9 +29,11 @@ public class JmxMetricsManager {
                 logger.info("Successfully registered JMX MBean [{}] for instance [ID: {}]", mbeanName, instanceId);
             }
         } catch (MalformedObjectNameException e) {
-            logger.error("[ALERT_JMX_FAILURE] Invalid JMX ObjectName format: {}. Monitoring disabled for instance [ID: {}].", mbeanName, instanceId, e);
+            logger.error("[ALERT_JMX_FAILURE] Invalid JMX ObjectName format: {}. " +
+                    "Monitoring disabled for instance [ID: {}].", mbeanName, instanceId, e);
         } catch (InstanceAlreadyExistsException e) {
-            logger.warn("JMX MBean [{}] already registered. Bypassing registration for instance [ID: {}].", mbeanName, instanceId);
+            logger.warn("JMX MBean [{}] already registered. Bypassing registration for instance [ID: {}].",
+                    mbeanName, instanceId);
         } catch (MBeanRegistrationException | NotCompliantMBeanException e) {
             logger.error("[ALERT_JMX_FAILURE] Failed to register JMX MBean [{}]. Monitoring disabled.", mbeanName, e);
         }
@@ -45,7 +49,8 @@ public class JmxMetricsManager {
             } catch (InstanceNotFoundException e) {
                 logger.warn("Attempted to unregister JMX MBean [{}], but it was not found.", jmxObjectName);
             } catch (MBeanRegistrationException e) {
-                logger.error("[ALERT_JMX_LEAK] Failed to unregister JMX MBean [{}]. Potential memory leak on connector reload.", jmxObjectName, e);
+                logger.error("[ALERT_JMX_LEAK] Failed to unregister JMX MBean [{}]. " +
+                        "Potential memory leak on connector reload.", jmxObjectName, e);
             }
         }
     }
