@@ -1,0 +1,49 @@
+plugins {
+    id 'java'
+    id 'com.github.johnrengelman.shadow' version '7.1.2'
+}
+
+group = 'com.yuktitechnologies'
+version = '1.0-SNAPSHOT'
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_11
+    targetCompatibility = JavaVersion.VERSION_11
+}
+
+tasks.withType(JavaCompile) {
+    options.release = 11
+}
+
+repositories {
+    mavenCentral()
+    maven { url "https://packages.confluent.io/maven/" }
+}
+
+dependencies {
+    // Core Kafka Connect APIs (Provided by the Docker runtime)
+    compileOnly 'org.apache.kafka:connect-api:3.6.0'
+    compileOnly 'org.apache.kafka:kafka-clients:3.6.0'
+    compileOnly 'org.slf4j:slf4j-api:1.7.36'
+
+    // Unit Testing (JUnit 5)
+    testImplementation 'org.junit.jupiter:junit-jupiter-api:5.9.2'
+    testRuntimeOnly 'org.junit.jupiter:junit-jupiter-engine:5.9.2'
+
+    // Logging for our local tests
+    testImplementation 'ch.qos.logback:logback-classic:1.2.11'
+    testImplementation 'org.apache.kafka:connect-api:3.6.0'
+}
+
+test {
+    useJUnitPlatform()
+    testLogging {
+        events "passed", "skipped", "failed"
+    }
+}
+
+jar {
+    archiveBaseName.set('pii-masking-smt')
+    archiveClassifier.set('')
+    archiveVersion.set('')
+}
