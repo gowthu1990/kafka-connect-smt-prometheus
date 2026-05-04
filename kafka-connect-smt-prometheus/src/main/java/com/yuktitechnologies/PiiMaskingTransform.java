@@ -5,35 +5,49 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.yuktitechnologies.exception.PiiTransformationException;
-import com.yuktitechnologies.jmx.JmxMetricsManager;
-import com.yuktitechnologies.jmx.PiiMetrics;
+
+import io.micrometer.core.instrument.Clock;
+import io.micrometer.core.instrument.Timer;
+// Changed imports to JMX
+import io.micrometer.jmx.JmxConfig;
+import io.micrometer.jmx.JmxMeterRegistry;
+
 import org.apache.kafka.common.config.ConfigDef;
 import org.apache.kafka.connect.connector.ConnectRecord;
 import org.apache.kafka.connect.transforms.Transformation;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.time.Duration;
 import java.util.Map;
 
 public class PiiMaskingTransform<R extends ConnectRecord<R>> implements Transformation<R> {
 
     private static final Logger logger = LoggerFactory.getLogger(PiiMaskingTransform.class);
-
-    // Thread-safe, reused instance for high performance
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
-    private PiiMetrics metrics;
-    private JmxMetricsManager jmxManager;
     private String instanceId;
+
+    // 1. Swapped to JMX Registry
+    private JmxMeterRegistry jmxRegistry;
+
+    // Core application timer
+    private Timer smtProcessingTimer;
 
     @Override
     public void configure(Map<String, ?> configs) {
         this.instanceId = Integer.toHexString(System.identityHashCode(this));
         logger.info("Initializing PiiMaskingTransform instance [ID: {}]", instanceId);
 
-        this.metrics = new PiiMetrics();
-        this.jmxManager = new JmxMetricsManager();
-        this.jmxManager.registerMetrics(metrics, instanceId + "_JSON");
+        // 2. Initialize JmxMeterRegistry to expose metrics to Prometheus
+        this.jmxRegistry = new JmxMeterRegistry(JmxConfig.DEFAULT, Clock.SYSTEM);
+        logger.info("JMX Telemetry Registry Initialized successfully.");
+
+        // Build smt_processing_latency Timer
+        this.smtProcessingTimer = Timer.builder("kafka.smt.processing.time")
+                .description("Internal execution time of the Kafka Connect SMT")
+                .publishPercentiles(0.95, 0.99)
+                .register(jmxRegistry);
     }
 
     @Override
@@ -42,12 +56,13 @@ public class PiiMaskingTransform<R extends ConnectRecord<R>> implements Transfor
             return record;
         }
 
-        long smtStartTimeNs = System.nanoTime();
+        // 3. Start Micrometer Sample using the new JMX registry
+        Timer.Sample smtSample = Timer.start(jmxRegistry);
 
         try {
             if (!(record.value() instanceof String)) {
-                String errorMsg = String.format("Schema mismatch for record on topic [%s] partition [%s]. " +
-                                "Expected String.", record.topic(), record.kafkaPartition());
+                String errorMsg = String.format("Schema mismatch for record on topic [%s] partition [%s]. Expected String.",
+                        record.topic(), record.kafkaPartition());
                 logger.error("[DATA_VALIDATION_ALERT] {} Routing to DLQ.", errorMsg);
                 throw new PiiTransformationException(errorMsg);
             }
@@ -61,39 +76,48 @@ public class PiiMaskingTransform<R extends ConnectRecord<R>> implements Transfor
 
             ObjectNode transformedValue = (ObjectNode) rootNode;
 
-            // 1. PII Masking
+            // Core Business Logic: PII Masking
             maskSensitiveFields(transformedValue);
-            transformedValue.put("processed_timestamp", System.currentTimeMillis());
 
-            // 2. Extract Generic Epochs safely
-            long eventTimestamp = extractEpoch(transformedValue, "eventTimestamp");
-            long firstHopTimestamp = extractEpoch(transformedValue, "firstHopTimestamp");
-            long finalHopTimestamp = extractEpoch(transformedValue, "finalHopTimestamp");
             long currentTimeMs = System.currentTimeMillis();
+            transformedValue.put("processed_timestamp", currentTimeMs);
 
-            // 3. Calculate Component-Level Latencies
-            long sourceToFirstHop = firstHopTimestamp - eventTimestamp;
-            long interHopLatency = finalHopTimestamp - firstHopTimestamp;
-            long sinkConsumptionLag = currentTimeMs - finalHopTimestamp;
-            long endToEndLatency = currentTimeMs - eventTimestamp;
+            // Defensive Extraction of Epochs
+            Long cbsEpoch = extractEpochSafely(transformedValue, "cbs_generated_at");
+            Long k1Epoch  = extractEpochSafely(transformedValue, "k1epoch");
+            Long k2Epoch  = extractEpochSafely(transformedValue, "k2epoch");
+            Long k3Epoch  = extractEpochSafely(transformedValue, "k3epoch");
 
-            // 4. Diagnostic Threshold Logging
-            long THRESHOLD_MS = 500L;
-            if (sourceToFirstHop > THRESHOLD_MS) {
-                logger.warn("[LATENCY_THRESHOLD_ALERT] High Source Ingest Latency: {} ms on partition {}",
-                        sourceToFirstHop, record.kafkaPartition());
+            // 4. Update all conditional registrations to use jmxRegistry
+            if (cbsEpoch != null && k1Epoch != null && k1Epoch >= cbsEpoch) {
+                Timer.builder("kafka.pipeline.hop.cbs_to_k1")
+                        .description("Latency from CBS to K1")
+                        .publishPercentiles(0.95, 0.99)
+                        .register(jmxRegistry)
+                        .record(Duration.ofMillis(k1Epoch - cbsEpoch));
             }
-            if (sinkConsumptionLag > THRESHOLD_MS) {
-                logger.warn("[LATENCY_THRESHOLD_ALERT] High Sink Consumption Lag: {} ms on partition {}",
-                        sinkConsumptionLag, record.kafkaPartition());
+
+            if (k1Epoch != null && k2Epoch != null && k2Epoch >= k1Epoch) {
+                Timer.builder("kafka.pipeline.hop.k1_to_k2")
+                        .description("Latency of K1 to K2 Transformation")
+                        .publishPercentiles(0.95, 0.99)
+                        .register(jmxRegistry)
+                        .record(Duration.ofMillis(k2Epoch - k1Epoch));
             }
 
-            // 5. Serialize back to String
+            if (k2Epoch != null && k3Epoch != null && k3Epoch >= k2Epoch) {
+                Timer.builder("kafka.pipeline.hop.k2_to_k3")
+                        .description("Latency of K2 to K3 Transformation")
+                        .publishPercentiles(0.95, 0.99)
+                        .register(jmxRegistry)
+                        .record(Duration.ofMillis(k3Epoch - k2Epoch));
+            }
+
+            // Serialize back to String
             String updatedJson = MAPPER.writeValueAsString(transformedValue);
 
-            // 6. Record all metrics to JMX
-            long smtLatencyNs = System.nanoTime() - smtStartTimeNs;
-            metrics.recordMetrics(smtLatencyNs, sourceToFirstHop, interHopLatency, endToEndLatency);
+            // Stop the sample and record the SMT processing time automatically
+            smtSample.stop(smtProcessingTimer);
 
             return record.newRecord(
                     record.topic(), record.kafkaPartition(), record.keySchema(), record.key(),
@@ -115,12 +139,21 @@ public class PiiMaskingTransform<R extends ConnectRecord<R>> implements Transfor
         }
     }
 
-    private long extractEpoch(ObjectNode payload, String fieldName) {
+    private Long extractEpochSafely(ObjectNode payload, String fieldName) {
         JsonNode node = payload.get(fieldName);
-        if (node != null && node.isNumber()) {
-            return node.asLong();
+        if (node != null) {
+            try {
+                if (node.isNumber()) {
+                    return node.asLong();
+                } else if (node.isTextual()) {
+                    return Long.parseLong(node.asText());
+                }
+            } catch (NumberFormatException e) {
+                logger.debug("Malformed timestamp for field [{}]. Skipping metric calculation.", fieldName);
+                return null;
+            }
         }
-        return System.currentTimeMillis(); // Fallback to avoid crashing on malformed data
+        return null;
     }
 
     private void maskSensitiveFields(ObjectNode payload) {
@@ -140,8 +173,8 @@ public class PiiMaskingTransform<R extends ConnectRecord<R>> implements Transfor
     @Override
     public void close() {
         logger.info("Shutting down PiiMaskingTransform instance [ID: {}]", instanceId);
-        if (jmxManager != null) {
-            jmxManager.unregisterMetrics();
+        if (jmxRegistry != null) {
+            jmxRegistry.close();
         }
     }
 }

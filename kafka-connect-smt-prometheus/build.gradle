@@ -27,6 +27,7 @@ dependencies {
     compileOnly 'org.slf4j:slf4j-api:1.7.36'
 
     implementation 'com.fasterxml.jackson.core:jackson-databind:2.15.2'
+    implementation 'io.micrometer:micrometer-registry-jmx:1.16.5'
 
     testImplementation 'org.jetbrains:annotations:24.0.0'
 
@@ -54,8 +55,18 @@ sourceSets {
     }
 }
 
+// 4. Configure the Fat JAR to bundle Micrometer & Protobuf
+shadowJar {
+    archiveBaseName.set('pii-masking-smt')
+    archiveClassifier.set('fat') // Labels the output as the uber-jar
+    archiveVersion.set(project.version)
+
+    // CRITICAL: Merges META-INF files so Jackson and Micrometer load correctly in Kafka Connect
+    mergeServiceFiles()
+}
+
+// Optional: Override the standard jar task so you don't accidentally deploy the skinny one
 jar {
     archiveBaseName.set('pii-masking-smt')
-    archiveClassifier.set('')
-    archiveVersion.set('')
+    archiveClassifier.set('skinny')
 }

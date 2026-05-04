@@ -1,3 +1,8 @@
 lowercaseOutputName: true
+lowercaseOutputLabelNames: true
 rules:
-  - pattern: ".*"
+  # This tells the JMX exporter to capture all custom Micrometer metrics
+  # and format them cleanly for Prometheus.
+  - pattern: 'metrics<name=(.+)><>(.+):'
+    name: metrics_$1_$2
+    type: GAUGE
