@@ -122,6 +122,8 @@ Once the load generator is running, data will flow into Prometheus and become vi
        * Query A (P95 Baseline): metrics_kafkasmtprocessingtime_type_timers_95thpercentile 
        * Query B (P99 Tail Latency): metrics_kafkasmtprocessingtime_type_timers_99thpercentile 
        * Unit: Time > Milliseconds (ms)
+       * 
+![img_1.png](img_1.png)
 
 ### Step 7: Benchmark Results (Local Profile)
 * Target Load: ~25,000 TPS
